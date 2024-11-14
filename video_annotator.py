@@ -5,7 +5,7 @@ import json
 import time
 import cv2
 from ultralytics import YOLO
-from evaluator import Utils, get_iou
+from evaluator import Utils, calculate_iou
 
 opencv_trackers = ["mil", "nano", "vit", "csrt", "kcf"]
 yolo_trackers = ["botsort", "bytetrack"]
@@ -106,8 +106,10 @@ class VideoAnnotator:
         success, frame = capture.read()
         height, width, _ = frame.shape
 
-        video = cv2.VideoWriter("video.mp4", -1, 1, (width, height))
-        video.write(frame)
+        if show_output:
+            video = cv2.VideoWriter("output.mp4", -1, 1, (width, height))
+            video.write(frame)
+
         if success:
             results = self.__detector.predict(frame)
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
@@ -120,7 +122,6 @@ class VideoAnnotator:
                     TrackedObject(box, frame, self.__tracker_type)
                 )
 
-            # iou threshold for non-overlaping boxes
             iou_min_threshold = 0.1
 
             while capture.isOpened():
@@ -133,7 +134,6 @@ class VideoAnnotator:
                         if success:
                             object.set_box(result)
 
-                    # add new object to the list of tracked objects if it doesn't overlap with any existing object
                     if self.__mot:
                         new_results = self.__detector.predict(frame)
                         new_boxes = (
@@ -142,7 +142,7 @@ class VideoAnnotator:
                         for new_box in new_boxes:
                             object_indexes_to_iou = {}
                             for i, object in enumerate(self.__tracked_objects_list):
-                                iou = get_iou(
+                                iou = calculate_iou(
                                     Utils.xywh_to_xyxy(object.get_box()), new_box
                                 )
                                 object_indexes_to_iou[i] = iou
@@ -150,7 +150,9 @@ class VideoAnnotator:
                             max_iou = max(object_indexes_to_iou.values())
 
                             if max_iou < iou_min_threshold:
-                                print(f"Adding tracker with smallest max IOU {max_iou}")
+                                print(
+                                    "Adding new tracker with max_iou < iou_min_threshold"
+                                )
                                 new_box = Utils.xyxy_to_xywh(new_box)
                                 self.__tracked_objects_list.append(
                                     TrackedObject(new_box, frame, self.__tracker_type)
