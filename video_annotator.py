@@ -123,16 +123,21 @@ class VideoAnnotator:
                 )
 
             iou_min_threshold = 0.1
+            iou_max_threshold = 0.8
 
             while capture.isOpened():
                 success, frame = capture.read()
                 if success:
                     start_time = time.time_ns()
 
-                    for object in self.__tracked_objects_list:
+                    object_indexes_to_remove = []
+
+                    for i, object in enumerate(self.__tracked_objects_list):
                         success, result = object.get_tracker().update(frame)
                         if success:
                             object.set_box(result)
+                        else:
+                            object_indexes_to_remove.append(i)
 
                     if self.__mot:
                         new_results = self.__detector.predict(frame)
@@ -157,6 +162,26 @@ class VideoAnnotator:
                                 self.__tracked_objects_list.append(
                                     TrackedObject(new_box, frame, self.__tracker_type)
                                 )
+                            elif max_iou > iou_max_threshold:
+                                sorted_data = dict(
+                                    sorted(
+                                        object_indexes_to_iou.items(),
+                                        key=lambda item: item[1],
+                                        reverse=True,
+                                    )
+                                )
+                                iterator = iter(sorted_data.items())
+                                next(iterator)
+                                for index, iou in iterator:
+                                    if iou <= iou_max_threshold:
+                                        break
+                                    print(
+                                        "Removing extra trackers with max_iou > iou_max_threshold"
+                                    )
+                                    object_indexes_to_remove.append(index)
+
+                    for index in sorted(object_indexes_to_remove, reverse=True):
+                        del self.__tracked_objects_list[index]
 
                     end_time = time.time_ns()
                     self.__time.append((end_time - start_time) / 1000000)  # miliseconds
