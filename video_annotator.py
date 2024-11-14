@@ -124,7 +124,6 @@ class VideoAnnotator:
 
             iou_min_threshold = 0.1
             iou_max_threshold = 0.8
-            iou_displacement_threshold = 0.5
 
             while capture.isOpened():
                 success, frame = capture.read()
@@ -136,16 +135,7 @@ class VideoAnnotator:
                     for i, object in enumerate(self.__tracked_objects_list):
                         success, result = object.get_tracker().update(frame)
                         if success:
-                            iou = calculate_iou(
-                                Utils.xywh_to_xyxy(object.get_box()),
-                                Utils.xywh_to_xyxy(result),
-                            )
-                            if iou > iou_displacement_threshold:
-                                object.set_box(result)
-                            else:
-                                print(
-                                    f"Bounding box moved too much, ignoring the tracker update: {iou}"
-                                )
+                            object.set_box(result)
                         else:
                             object_indexes_to_remove.append(i)
 
