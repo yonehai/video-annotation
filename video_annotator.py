@@ -122,24 +122,24 @@ class VideoAnnotator:
                     TrackedObject(box, frame, self.__tracker_type)
                 )
 
-            iou_min_threshold = 0.1
-            iou_max_threshold = 0.8
-
             while capture.isOpened():
                 success, frame = capture.read()
                 if success:
                     start_time = time.time_ns()
 
-                    object_indexes_to_remove = []
+                    object_indexes_to_remove = set()
 
                     for i, object in enumerate(self.__tracked_objects_list):
                         success, result = object.get_tracker().update(frame)
                         if success:
                             object.set_box(result)
                         else:
-                            object_indexes_to_remove.append(i)
+                            object_indexes_to_remove.add(i)
 
                     if self.__mot:
+                        iou_min_threshold = 0.1
+                        iou_max_threshold = 0.8
+
                         new_results = self.__detector.predict(frame)
                         new_boxes = (
                             new_results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
@@ -172,13 +172,13 @@ class VideoAnnotator:
                                 )
                                 iterator = iter(sorted_data.items())
                                 next(iterator)
-                                for index, iou in iterator:
+                                for i, iou in iterator:
                                     if iou <= iou_max_threshold:
                                         break
                                     print(
                                         "Removing extra trackers with max_iou > iou_max_threshold"
                                     )
-                                    object_indexes_to_remove.append(index)
+                                    object_indexes_to_remove.add(i)
 
                     for index in sorted(object_indexes_to_remove, reverse=True):
                         del self.__tracked_objects_list[index]
