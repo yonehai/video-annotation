@@ -139,6 +139,7 @@ class VideoAnnotator:
                     if self.__mot:
                         iou_min_threshold = 0.1
                         iou_max_threshold = 0.8
+                        out_of_frame_threshold = 0.5
 
                         new_results = self.__detector.predict(frame)
                         new_boxes = (
@@ -179,6 +180,15 @@ class VideoAnnotator:
                                         "Removing extra trackers with max_iou > iou_max_threshold"
                                     )
                                     object_indexes_to_remove.add(i)
+
+                    # remove out-of-frame objects
+                    for i, object in enumerate(self.__tracked_objects_list):
+                        is_out_of_frame = self.__is_out_of_frame(
+                            object.get_box(), width, height, out_of_frame_threshold
+                        )
+                        if is_out_of_frame:
+                            print(f"Removing out-of-frame tracker: {object.get_box()}")
+                            object_indexes_to_remove.add(i)
 
                     for index in sorted(object_indexes_to_remove, reverse=True):
                         del self.__tracked_objects_list[index]
@@ -223,6 +233,18 @@ class VideoAnnotator:
             }
             self.__reset()
             return result
+
+    def __is_out_of_frame(self, box, frame_width, frame_height, k):
+        xmin, ymin, w, h = box
+        xmax, ymax = xmin + w, ymin + h
+        if (
+            (xmin < 0 and abs(xmin) > w * k)
+            or (xmax > frame_width and xmax - frame_width > w * k)
+            or (ymin < 0 and abs(ymin) > h * k)
+            or (ymax > frame_height and ymax - frame_height > h * k)
+        ):
+            return True
+        return False
 
     def __reset(self):
         self.__frames_data = []
