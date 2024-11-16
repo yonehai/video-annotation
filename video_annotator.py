@@ -122,6 +122,9 @@ class VideoAnnotator:
                     TrackedObject(box, frame, self.__tracker_type)
                 )
 
+            iou_displacement_threshold = 0.5
+            size_change_threshold = 0.5
+
             while capture.isOpened():
                 success, frame = capture.read()
                 if success:
@@ -132,7 +135,19 @@ class VideoAnnotator:
                     for i, object in enumerate(self.__tracked_objects_list):
                         success, result = object.get_tracker().update(frame)
                         if success:
-                            object.set_box(result)
+                            is_position_changed = self.__is_position_changed(
+                                object.get_box(), result, iou_displacement_threshold
+                            )
+                            is_size_changed = self.__is_size_changed(
+                                object.get_box(), result, size_change_threshold
+                            )
+                            if is_size_changed or is_position_changed:
+                                print(
+                                    "Bounding box changed too much, removing the tracker"
+                                )
+                                object_indexes_to_remove.add(i)
+                            else:
+                                object.set_box(result)
                         else:
                             object_indexes_to_remove.add(i)
 
@@ -234,17 +249,27 @@ class VideoAnnotator:
             self.__reset()
             return result
 
-    def __is_out_of_frame(self, box, frame_width, frame_height, k):
+    def __is_out_of_frame(self, box, frame_width, frame_height, threshold):
         xmin, ymin, w, h = box
         xmax, ymax = xmin + w, ymin + h
-        if (
-            (xmin < 0 and abs(xmin) > w * k)
-            or (xmax > frame_width and xmax - frame_width > w * k)
-            or (ymin < 0 and abs(ymin) > h * k)
-            or (ymax > frame_height and ymax - frame_height > h * k)
-        ):
-            return True
-        return False
+        return (
+            (xmin < 0 and abs(xmin) > w * threshold)
+            or (xmax > frame_width and xmax - frame_width > w * threshold)
+            or (ymin < 0 and abs(ymin) > h * threshold)
+            or (ymax > frame_height and ymax - frame_height > h * threshold)
+        )
+
+    def __is_position_changed(self, box, new_box, threshold):
+        iou = calculate_iou(
+            Utils.xywh_to_xyxy(box),
+            Utils.xywh_to_xyxy(new_box),
+        )
+        return iou < threshold
+
+    def __is_size_changed(self, box, new_box, threshold):
+        s_old = box[2] * box[3]
+        s_new = new_box[2] * new_box[3]
+        return abs(s_old - s_new) / max(s_old, s_new) > threshold
 
     def __reset(self):
         self.__frames_data = []
