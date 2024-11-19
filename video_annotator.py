@@ -72,19 +72,12 @@ class VideoAnnotator:
                     persist=True,
                     tracker=f"{self.__tracker_type}.yaml",
                     show=show_output,
+                    verbose=False,
                 )
                 end_time = time.time_ns()
                 self.__time.append((end_time - start_time) / 1000000)  # miliseconds
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
-                objects = []
-                for box in boxes:
-                    object = {
-                        "x": box[0],
-                        "y": box[1],
-                        "w": box[2] - box[0],
-                        "h": box[3] - box[1],
-                    }
-                    objects.append(object)
+                objects = [self.__box_to_json(Utils.xyxy_to_xywh(box)) for box in boxes]
                 self.__frames_data.append(
                     {"number": self.__current_frame_number, "objects": objects}
                 )
@@ -102,28 +95,125 @@ class VideoAnnotator:
         return result
 
     def __annotate_opencv(self, video_path, show_output):
+        if self.__mot:
+            return self.__opencv_mot(video_path, show_output)
+        else:
+            return self.__opencv_sot(video_path, show_output)
+
+    def __opencv_sot(self, video_path, show_output):
         capture = cv2.VideoCapture(video_path)
         success, frame = capture.read()
         height, width, _ = frame.shape
-
-        if show_output:
-            video = cv2.VideoWriter("output.mp4", -1, 1, (width, height))
-            video.write(frame)
-
         if success:
-            results = self.__detector.predict(frame)
+            if show_output:
+                video = cv2.VideoWriter("output.mp4", -1, 1, (width, height))
+                video.write(frame)
+            results = self.__detector.predict(frame, verbose=False)
+            box = results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()[0]
+            box = Utils.xyxy_to_xywh(box)
+            self.__tracked_objects_list.append(
+                TrackedObject(box, frame, self.__tracker_type)
+            )
+            if show_output:
+                cv2.rectangle(
+                    frame,
+                    (box[0], box[1]),
+                    (box[0] + box[2], box[1] + box[3]),
+                    (255, 0, 0),
+                    2,
+                    1,
+                )
+            self.__frames_data.append(
+                {
+                    "number": self.__current_frame_number,
+                    "objects": [self.__box_to_json(box)],
+                }
+            )
+            self.__current_frame_number += 1
+
+            object = self.__tracked_objects_list[0]
+            while capture.isOpened():
+                success, frame = capture.read()
+                if success:
+                    start_time = time.time_ns()
+                    success, result = object.get_tracker().update(frame)
+                    if success:
+                        object.set_box(result)
+                    end_time = time.time_ns()
+                    self.__time.append((end_time - start_time) / 1000000)  # miliseconds
+                    box = object.get_box()
+                    self.__frames_data.append(
+                        {
+                            "number": self.__current_frame_number,
+                            "objects": [self.__box_to_json(box)],
+                        }
+                    )
+                    self.__current_frame_number += 1
+                    if show_output:
+                        cv2.rectangle(
+                            frame,
+                            (box[0], box[1]),
+                            (box[0] + box[2], box[1] + box[3]),
+                            (255, 0, 0),
+                            2,
+                            1,
+                        )
+                        cv2.imshow("Tracking", frame)
+                        video.write(frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    break
+            capture.release()
+            result = {
+                "average_time": sum(self.__time) / len(self.__time),
+                "frames": self.__frames_data,
+            }
+            self.__reset()
+            return result
+
+    def __opencv_mot(self, video_path, show_output):
+        iou_min_threshold = 0.1
+        iou_max_threshold = 0.8
+        out_of_frame_threshold = 0.5
+        iou_displacement_threshold = 0.5
+        size_change_threshold = 0.5
+        detector_confidence = 0.5
+
+        capture = cv2.VideoCapture(video_path)
+        success, frame = capture.read()
+        height, width, _ = frame.shape
+        if success:
+            if show_output:
+                video = cv2.VideoWriter("output.mp4", -1, 1, (width, height))
+                video.write(frame)
+            results = self.__detector.predict(
+                frame, conf=detector_confidence, verbose=False
+            )
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
-            # track only the first detected object by default
-            if not self.__mot:
-                boxes = [boxes[0]]
             boxes = [Utils.xyxy_to_xywh(box) for box in boxes]
             for box in boxes:
                 self.__tracked_objects_list.append(
                     TrackedObject(box, frame, self.__tracker_type)
                 )
 
-            iou_displacement_threshold = 0.5
-            size_change_threshold = 0.5
+            objects_json = []
+            for object in self.__tracked_objects_list:
+                box = object.get_box()
+                objects_json.append(self.__box_to_json(box))
+                if show_output:
+                    cv2.rectangle(
+                        frame,
+                        (box[0], box[1]),
+                        (box[0] + box[2], box[1] + box[3]),
+                        (255, 0, 0),
+                        2,
+                        1,
+                    )
+            self.__frames_data.append(
+                {"number": self.__current_frame_number, "objects": objects_json}
+            )
+            self.__current_frame_number += 1
 
             while capture.isOpened():
                 success, frame = capture.read()
@@ -135,6 +225,7 @@ class VideoAnnotator:
                     for i, object in enumerate(self.__tracked_objects_list):
                         success, result = object.get_tracker().update(frame)
                         if success:
+                            # check if box size or position has changed significantly
                             is_position_changed = self.__is_position_changed(
                                 object.get_box(), result, iou_displacement_threshold
                             )
@@ -142,67 +233,56 @@ class VideoAnnotator:
                                 object.get_box(), result, size_change_threshold
                             )
                             if is_size_changed or is_position_changed:
-                                print(
-                                    "Bounding box changed too much, removing the tracker"
-                                )
                                 object_indexes_to_remove.add(i)
                             else:
                                 object.set_box(result)
                         else:
                             object_indexes_to_remove.add(i)
 
-                    if self.__mot:
-                        iou_min_threshold = 0.1
-                        iou_max_threshold = 0.8
-                        out_of_frame_threshold = 0.5
+                    new_results = self.__detector.predict(
+                        frame, conf=detector_confidence, verbose=False
+                    )
+                    new_boxes = (
+                        new_results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
+                    )
+                    for new_box in new_boxes:
+                        object_indexes_to_iou = {}
+                        for i, object in enumerate(self.__tracked_objects_list):
+                            iou = calculate_iou(
+                                Utils.xywh_to_xyxy(object.get_box()), new_box
+                            )
+                            object_indexes_to_iou[i] = iou
 
-                        new_results = self.__detector.predict(frame)
-                        new_boxes = (
-                            new_results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
-                        )
-                        for new_box in new_boxes:
-                            object_indexes_to_iou = {}
-                            for i, object in enumerate(self.__tracked_objects_list):
-                                iou = calculate_iou(
-                                    Utils.xywh_to_xyxy(object.get_box()), new_box
-                                )
-                                object_indexes_to_iou[i] = iou
+                        max_iou = max(object_indexes_to_iou.values())
 
-                            max_iou = max(object_indexes_to_iou.values())
+                        # add new non-overlapping object
+                        if max_iou < iou_min_threshold:
+                            new_box = Utils.xyxy_to_xywh(new_box)
+                            self.__tracked_objects_list.append(
+                                TrackedObject(new_box, frame, self.__tracker_type)
+                            )
+                        # remove overlapping objects but not the original one
+                        elif max_iou > iou_max_threshold:
+                            sorted_data = dict(
+                                sorted(
+                                    object_indexes_to_iou.items(),
+                                    key=lambda item: item[1],
+                                    reverse=True,
+                                )
+                            )
+                            iterator = iter(sorted_data.items())
+                            next(iterator)
+                            for i, iou in iterator:
+                                if iou <= iou_max_threshold:
+                                    break
+                                object_indexes_to_remove.add(i)
 
-                            if max_iou < iou_min_threshold:
-                                print(
-                                    "Adding new tracker with max_iou < iou_min_threshold"
-                                )
-                                new_box = Utils.xyxy_to_xywh(new_box)
-                                self.__tracked_objects_list.append(
-                                    TrackedObject(new_box, frame, self.__tracker_type)
-                                )
-                            elif max_iou > iou_max_threshold:
-                                sorted_data = dict(
-                                    sorted(
-                                        object_indexes_to_iou.items(),
-                                        key=lambda item: item[1],
-                                        reverse=True,
-                                    )
-                                )
-                                iterator = iter(sorted_data.items())
-                                next(iterator)
-                                for i, iou in iterator:
-                                    if iou <= iou_max_threshold:
-                                        break
-                                    print(
-                                        "Removing extra trackers with max_iou > iou_max_threshold"
-                                    )
-                                    object_indexes_to_remove.add(i)
-
-                    # remove out-of-frame objects
+                    # remove objects that are out of frame
                     for i, object in enumerate(self.__tracked_objects_list):
                         is_out_of_frame = self.__is_out_of_frame(
                             object.get_box(), width, height, out_of_frame_threshold
                         )
                         if is_out_of_frame:
-                            print(f"Removing out-of-frame tracker: {object.get_box()}")
                             object_indexes_to_remove.add(i)
 
                     for index in sorted(object_indexes_to_remove, reverse=True):
@@ -214,13 +294,7 @@ class VideoAnnotator:
                     objects_json = []
                     for object in self.__tracked_objects_list:
                         box = object.get_box()
-                        box_json = {
-                            "x": box[0],
-                            "y": box[1],
-                            "w": box[2],
-                            "h": box[3],
-                        }
-                        objects_json.append(box_json)
+                        objects_json.append(self.__box_to_json(box))
                         if show_output:
                             cv2.rectangle(
                                 frame,
@@ -248,6 +322,15 @@ class VideoAnnotator:
             }
             self.__reset()
             return result
+
+    def __box_to_json(self, box):
+        box_json = {
+            "x": box[0],
+            "y": box[1],
+            "w": box[2],
+            "h": box[3],
+        }
+        return box_json
 
     def __is_out_of_frame(self, box, frame_width, frame_height, threshold):
         xmin, ymin, w, h = box
