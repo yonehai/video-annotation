@@ -178,7 +178,6 @@ class VideoAnnotator:
         out_of_frame_threshold = 0.5
         iou_displacement_threshold = 0.5
         size_change_threshold = 0.5
-        detector_confidence = 0.5
 
         capture = cv2.VideoCapture(video_path)
         success, frame = capture.read()
@@ -187,9 +186,7 @@ class VideoAnnotator:
             if show_output:
                 video = cv2.VideoWriter("output.mp4", -1, 1, (width, height))
                 video.write(frame)
-            results = self.__detector.predict(
-                frame, conf=detector_confidence, verbose=False
-            )
+            results = self.__detector.predict(frame, verbose=False)
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
             boxes = [Utils.xyxy_to_xywh(box) for box in boxes]
             for box in boxes:
@@ -239,9 +236,7 @@ class VideoAnnotator:
                         else:
                             object_indexes_to_remove.add(i)
 
-                    new_results = self.__detector.predict(
-                        frame, conf=detector_confidence, verbose=False
-                    )
+                    new_results = self.__detector.predict(frame, verbose=False)
                     new_boxes = (
                         new_results[0].boxes.xyxy.cpu().numpy().astype(int).tolist()
                     )
